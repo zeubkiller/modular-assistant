@@ -10,7 +10,7 @@ def test_load_chef_profile():
     assert config["model"]
     assert config["system_prompt"]
     assert config["tools"] == ["analyze_fridge_photo", "save_recipe_markdown"]
-    assert "fond de placard" not in config["system_prompt"].lower() or "3 idées" in config["system_prompt"].lower()
+    assert "exactement 5 idées" in config["system_prompt"]
 
 
 def test_missing_profile(tmp_path):

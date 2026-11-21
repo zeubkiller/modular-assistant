@@ -77,9 +77,22 @@ pip install -r requirements.txt
 # Run the automated test suite
 pytest
 
+# Run live end-to-end tests (requires Ollama and qwen2.5-coder:3b)
+pytest -m e2e
+
+# Show prompts, model responses, and generated Markdown
+pytest -m e2e --e2e-debug
+
 # Start the Personal Chef assistant
 python main.py --profile chef
 ```
+
+### Chef's two-stage workflow
+Enter available ingredients and a direction (for example, `chicken, zucchini,
+rice; quick dinner`). The assistant displays three familiar and two exploratory
+ideas, each on one compact line. Enter a number from `1` to `5` to generate and
+save only that recipe under `output/recipes/`. To include a fridge photo, enter
+its image path in the same request as any typed ingredients.
 
 ---
 

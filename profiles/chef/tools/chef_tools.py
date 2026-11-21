@@ -2,20 +2,80 @@
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import ollama
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class RecipeIdea(BaseModel):
+    """A compact idea containing only its title and short pitch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=48)
+    pitch: str = Field(min_length=1)
+
+    @field_validator("title")
+    @classmethod
+    def validate_short_title(cls, value: str) -> str:
+        value = value.strip()
+        if len(value.split()) > 6:
+            raise ValueError("Proposal titles must contain at most 6 words")
+        return value
+
+    @field_validator("pitch")
+    @classmethod
+    def validate_short_pitch(cls, value: str) -> str:
+        value = value.strip()
+        if len(value.split()) > 10:
+            raise ValueError("Proposal pitches must contain at most 10 words")
+        return value
+
+
+class RecipeProposalSet(BaseModel):
+    """Exactly three familiar and two exploratory recipe ideas."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    classiques: list[RecipeIdea] = Field(min_length=3, max_length=3)
+    explorations: list[RecipeIdea] = Field(min_length=2, max_length=2)
+
+    @property
+    def proposals(self) -> list["RecipeProposal"]:
+        return [
+            RecipeProposal(title=idea.title, pitch=idea.pitch, category="Classique")
+            for idea in self.classiques
+        ] + [
+            RecipeProposal(title=idea.title, pitch=idea.pitch, category="Exploration")
+            for idea in self.explorations
+        ]
+
+
+class RecipeProposal(BaseModel):
+    """A compact classified idea ready for display and selection."""
+
+    title: str
+    category: Literal["Classique", "Exploration"]
+    pitch: str
 
 
 class RecipeData(BaseModel):
     """Validated structured recipe supplied by the assistant."""
 
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(min_length=1)
+    category: Literal["Classique", "Exploration"]
     prep_time: str = Field(
         min_length=1,
         pattern=r"^\d+\s*(?:min(?:ute)?s?|h(?:eure)?s?)(?:\s+\d+\s*(?:min(?:ute)?s?))?$",
         description="Durée réelle, par exemple '25 minutes' ou '1 h 15 min'.",
+    )
+    cook_time: str = Field(
+        min_length=1,
+        pattern=r"^\d+\s*(?:min(?:ute)?s?|h(?:eure)?s?)(?:\s+\d+\s*(?:min(?:ute)?s?))?$",
+        description="Durée réelle, par exemple '20 minutes' ou '1 h'.",
     )
     servings: int = Field(gt=0)
     ingredients: list[str] = Field(min_length=1)
@@ -66,6 +126,7 @@ def analyze_fridge_photo(
     client = ollama_client or ollama
     response = client.chat(
         model="moondream",
+        keep_alive=0,
         messages=[
             {
                 "role": "user",
@@ -90,16 +151,21 @@ def analyze_fridge_photo(
 
 def save_recipe_markdown(
     title: str,
+    category: str,
     prep_time: str,
+    cook_time: str,
     servings: int,
     ingredients: list[str],
     steps: list[str],
     chef_tip: str,
+    output_dir: str | Path | None = None,
 ) -> str:
     """Validate a recipe, render the chef template, and save it as Markdown."""
     recipe = RecipeData(
         title=title,
+        category=category,
         prep_time=prep_time,
+        cook_time=cook_time,
         servings=servings,
         ingredients=ingredients,
         steps=steps,
@@ -107,8 +173,8 @@ def save_recipe_markdown(
     )
 
     repo_root = Path(__file__).resolve().parents[3]
-    output_dir = repo_root / "output" / "recipes"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    recipes_dir = Path(output_dir) if output_dir is not None else repo_root / "output" / "recipes"
+    recipes_dir.mkdir(parents=True, exist_ok=True)
 
     template_path = (
         repo_root
@@ -121,7 +187,9 @@ def save_recipe_markdown(
     rendered = template
     replacements = {
         "{title}": recipe.title,
+        "{category}": recipe.category,
         "{prep_time}": recipe.prep_time,
+        "{cook_time}": recipe.cook_time,
         "{servings}": str(recipe.servings),
         "{ingredients}": "\n".join(f"- {item}" for item in recipe.ingredients),
         "{steps}": "\n".join(
@@ -134,6 +202,6 @@ def save_recipe_markdown(
 
     stem = re.sub(r"[^a-zA-Z0-9]+", "-", recipe.title.lower()).strip("-")
     stem = stem[:80] or "recette"
-    output_path = output_dir / f"{stem}.md"
+    output_path = recipes_dir / f"{stem}.md"
     output_path.write_text(rendered, encoding="utf-8")
     return str(output_path)

@@ -41,7 +41,9 @@ def test_tool_call_is_executed(mocker):
     tool = mocker.Mock(return_value="Recette sauvegardée")
     recipe_args = {
         "title": "Soupe aux lentilles",
+        "category": "Classique",
         "prep_time": "30 minutes",
+        "cook_time": "25 minutes",
         "servings": 4,
         "ingredients": ["lentilles", "bouillon"],
         "steps": ["Cuire les lentilles."],
@@ -79,7 +81,9 @@ def test_tool_exception_triggers_self_correction(mocker):
     tool = mocker.Mock(side_effect=[RuntimeError("disk full"), "saved"])
     recipe_args = {
         "title": "T",
+        "category": "Classique",
         "prep_time": "20 minutes",
+        "cook_time": "20 minutes",
         "servings": 2,
         "ingredients": ["riz"],
         "steps": ["Cuire."],
@@ -111,7 +115,9 @@ def test_embedded_json_tool_call_is_executed(mocker):
     tool = mocker.Mock(return_value="Recette enregistrée")
     recipe_args = {
         "title": "Riz aux tomates",
+        "category": "Exploration",
         "prep_time": "25 minutes",
+        "cook_time": "20 minutes",
         "servings": 4,
         "ingredients": ["riz", "tomates"],
         "steps": ["Cuire le riz."],

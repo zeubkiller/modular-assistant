@@ -5,116 +5,27 @@ import importlib
 import re
 from pathlib import Path
 
+import ollama
+from pydantic import ValidationError
 from rich.console import Console
 from rich.markdown import Markdown
-import ollama
 
 from core.config_loader import ConfigError, load_config
 from core.engine import ConversationEngine
 from core.rag import RAGIndex
-from profiles.chef.tools.chef_tools import RecipeData, save_recipe_markdown
+from profiles.chef.tools.chef_tools import (
+    RecipeData,
+    RecipeProposalSet,
+    analyze_fridge_photo,
+    save_recipe_markdown,
+)
 
 
 console = Console()
+OLLAMA_DETERMINISTIC_OPTIONS = {"temperature": 0.0, "seed": 42}
 
 
-def extract_recipe_title(answer: str, prompt: str) -> str:
-    title_match = re.search(
-        r"(?:\*\*Titre\s*:\*\*|^#\s*|Titre\s*:)\s*(.+)",
-        answer,
-        flags=re.IGNORECASE | re.MULTILINE,
-    )
-    if title_match:
-        return re.sub(r"[*#]+", "", title_match.group(1)).strip()
-
-    stopwords = {
-        "avec", "des", "du", "le", "les", "une", "un", "pour",
-        "dans", "et", "jai", "propose", "recette", "personnes",
-    }
-    words = [
-        word.lower()
-        for word in re.findall(r"[A-Za-zÀ-ÿ0-9]+", prompt)
-        if word.lower() not in stopwords and len(word) > 2
-    ]
-    selected = words[:5]
-    return "recette-" + "-".join(selected) if selected else "recette-maison"
-
-
-def save_chef_recipe_if_present(answer: str, prompt: str) -> Path | None:
-    return None
-
-
-def available_chef_tool_schemas(
-    schemas: list[dict],
-    prompt: str,
-    pending_recipe_ideas: bool,
-) -> list[dict]:
-    """Expose tools only when the user's turn explicitly authorizes their use."""
-    allowed_names: set[str] = set()
-    if pending_recipe_ideas and re.search(
-        r"\b(je choisis|je prends|je valide|je confirme|"
-        r"rédige|redige|prépare|prepare|"
-        r"(?:premier|première|premiere|deuxième|deuxieme|troisième|troisieme)"
-        r"(?: idée| option| recette)?|option [123]|recette [123])\b",
-        prompt,
-        flags=re.IGNORECASE,
-    ):
-        allowed_names.add("save_recipe_markdown")
-
-    image_path = re.search(
-        r"""(?:^|\s)([~/\w.-]+\.(?:png|jpe?g|webp))\b""",
-        prompt,
-        flags=re.IGNORECASE,
-    )
-    if image_path and Path(image_path.group(1)).expanduser().is_file():
-        allowed_names.add("analyze_fridge_photo")
-
-    return [
-        schema
-        for schema in schemas
-        if schema.get("function", {}).get("name") in allowed_names
-    ]
-
-
-def has_three_recipe_ideas(answer: str) -> bool:
-    numbered_items = re.findall(r"(?m)^\s*(?:\d+[.)]|[-*])\s+\S", answer)
-    return len(numbered_items) >= 3
-
-
-def is_recipe_approval(prompt: str, pending_recipe_ideas: bool) -> bool:
-    return pending_recipe_ideas and bool(
-        re.search(
-            r"\b(je choisis|je prends|je valide|je confirme|"
-            r"rédige|redige|prépare|prepare|"
-            r"(?:premier|première|premiere|deuxième|deuxieme|troisième|troisieme)"
-            r"(?: idée| option| recette)?|option [123]|recette [123])\b",
-            prompt,
-            flags=re.IGNORECASE,
-        )
-    )
-
-
-def create_approved_recipe(
-    engine: ConversationEngine,
-    prompt: str,
-    model: str,
-) -> Path:
-    """Generate validated recipe JSON and render it through the profile template."""
-    engine.messages.append({"role": "user", "content": prompt})
-    response = ollama.chat(
-        model=model,
-        messages=engine.messages
-        + [
-            {
-                "role": "user",
-                "content": (
-                    "Rédige la recette correspondant à l'idée choisie. Réponds "
-                    "uniquement avec les données correspondant au schéma JSON fourni."
-                ),
-            }
-        ],
-        format=RecipeData.model_json_schema(),
-    )
+def _response_content(response: object) -> str:
     message = getattr(response, "message", None)
     if isinstance(response, dict):
         message = response.get("message")
@@ -122,11 +33,153 @@ def create_approved_recipe(
     if isinstance(message, dict):
         content = message.get("content")
     if not content:
-        raise RuntimeError("Ollama n'a pas retourné de recette structurée")
+        raise RuntimeError("Ollama n'a pas retourné de contenu")
+    return str(content)
 
-    recipe = RecipeData.model_validate_json(content)
-    saved_path = Path(save_recipe_markdown(**recipe.model_dump()))
-    engine.messages.append({"role": "assistant", "content": content})
+
+def _chef_reference(profile_dir: Path) -> str:
+    knowledge_dir = profile_dir / "knowledge"
+    family_preferences = (knowledge_dir / "family_preferences.md").read_text(
+        encoding="utf-8"
+    )
+    pantry_staples = (knowledge_dir / "pantry_staples.md").read_text(
+        encoding="utf-8"
+    )
+    return (
+        f"PRÉFÉRENCES FAMILIALES:\n{family_preferences}\n\n"
+        f"FOND DE PLACARD:\n{pantry_staples}"
+    )
+
+
+def _include_photo_ingredients(prompt: str) -> str:
+    photo_match = re.search(
+        r"""(?:^|\s)([^\s'"]+\.(?:png|jpe?g|webp))\b""",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    if not photo_match:
+        return prompt
+    image_path = photo_match.group(1)
+    ingredients = analyze_fridge_photo(image_path)
+    return (
+        f"{prompt}\n\nINGRÉDIENTS DÉTECTÉS SUR LA PHOTO "
+        f"({image_path}): {ingredients}"
+    )
+
+
+def generate_recipe_proposals(
+    engine: ConversationEngine,
+    prompt: str,
+    profile_dir: Path,
+) -> RecipeProposalSet:
+    """Generate five validated, compact ideas grounded in profile knowledge."""
+    engine.reset()
+    request = (
+        f"{_chef_reference(profile_dir)}\n\n"
+        f"INGRÉDIENTS, ENVIE ET DIRECTION DE L'UTILISATEUR:\n{prompt}\n\n"
+        "Retourne exactement trois idées dans le tableau 'classiques' et deux "
+        "dans 'explorations'. Chaque idée contient uniquement title et pitch. "
+        "Le pitch ne dépasse jamais dix mots."
+    )
+    messages = engine.messages + [{"role": "user", "content": request}]
+    for attempt in range(2):
+        response = engine.ollama.chat(
+            model=engine.config["model"],
+            messages=messages,
+            format=RecipeProposalSet.model_json_schema(),
+            options={**OLLAMA_DETERMINISTIC_OPTIONS, "num_predict": 500},
+        )
+        content = _response_content(response)
+        try:
+            proposals = RecipeProposalSet.model_validate_json(content)
+            break
+        except ValidationError as exc:
+            if attempt == 1:
+                raise
+            messages.extend(
+                [
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Corrige la réponse précédente. Elle doit contenir "
+                            "exactement trois idées dans 'classiques' et deux "
+                            "dans 'explorations', chacune avec un pitch de dix "
+                            f"mots maximum. Erreur: {exc}"
+                        ),
+                    },
+                ]
+            )
+    engine.messages = engine.messages + [
+        {"role": "user", "content": request},
+        {"role": "assistant", "content": content},
+    ]
+    return proposals
+
+
+def parse_recipe_selection(prompt: str) -> int | None:
+    match = re.fullmatch(r"\s*(?:[Nn]°?\s*)?([1-5])\s*[.!]?\s*", prompt)
+    return int(match.group(1)) if match else None
+
+
+def create_approved_recipe(
+    engine: ConversationEngine,
+    proposals: RecipeProposalSet,
+    selected_number: int,
+    model: str,
+    output_dir: Path | None = None,
+) -> Path:
+    """Generate only the selected idea and render it using the recipe template."""
+    selected = proposals.proposals[selected_number - 1]
+    original_request = engine.messages[-2]["content"]
+    request = (
+        f"{original_request}\n\n"
+        f"PROPOSITION CHOISIE ({selected_number}/5):\n"
+        f"Catégorie: {selected.category}\n"
+        f"Titre: {selected.title}\n"
+        f"Pitch: {selected.pitch}\n\n"
+        "Rédige uniquement cette recette, pour quatre personnes, avec des "
+        "quantités réalistes et des étapes concises."
+    )
+    messages = [
+        engine.messages[0],
+        {"role": "user", "content": request},
+    ]
+    for attempt in range(2):
+        response = engine.ollama.chat(
+            model=model,
+            messages=messages,
+            format=RecipeData.model_json_schema(),
+            options={**OLLAMA_DETERMINISTIC_OPTIONS, "num_predict": 1200},
+        )
+        content = _response_content(response)
+        try:
+            generated = RecipeData.model_validate_json(content)
+            break
+        except ValidationError as exc:
+            if attempt == 1:
+                raise
+            messages.extend(
+                [
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Corrige la recette en respectant strictement le "
+                            "schéma JSON, les durées chiffrées et tous les champs. "
+                            f"Erreur: {exc}"
+                        ),
+                    },
+                ]
+            )
+    recipe = generated.model_copy(
+        update={"title": selected.title, "category": selected.category}
+    )
+    save_arguments = recipe.model_dump()
+    if output_dir is not None:
+        save_arguments["output_dir"] = output_dir
+    saved_path = Path(save_recipe_markdown(**save_arguments))
+    engine.messages = messages + [{"role": "assistant", "content": content}]
     return saved_path
 
 
@@ -162,7 +215,12 @@ def get_profile_tools(profile_name: str, profile_dir: Path) -> tuple[dict, list[
                         "type": "object",
                         "properties": {
                             "title": {"type": "string"},
+                            "category": {
+                                "type": "string",
+                                "enum": ["Classique", "Exploration"],
+                            },
                             "prep_time": {"type": "string"},
+                            "cook_time": {"type": "string"},
                             "servings": {"type": "integer", "minimum": 1},
                             "ingredients": {"type": "array", "items": {"type": "string"}},
                             "steps": {"type": "array", "items": {"type": "string"}},
@@ -170,7 +228,9 @@ def get_profile_tools(profile_name: str, profile_dir: Path) -> tuple[dict, list[
                         },
                         "required": [
                             "title",
+                            "category",
                             "prep_time",
+                            "cook_time",
                             "servings",
                             "ingredients",
                             "steps",
@@ -201,18 +261,19 @@ def main() -> None:
         collection_name=f"{args.profile}_knowledge",
         embed_model=config.get("embedding_model", "nomic-embed-text"),
     )
-    rag.build()
-    tools, schemas = get_profile_tools(args.profile, profile_dir)
+    if args.profile != "chef":
+        rag.build()
+    tools, _schemas = get_profile_tools(args.profile, profile_dir)
     engine = ConversationEngine(
         config,
         tools=tools,
         tool_schemas=[],
-        rag_index=rag,
+        rag_index=rag if args.profile != "chef" else None,
     )
 
     console.print(f"[bold green]Profil {args.profile} chargé[/bold green]")
     console.print("Tapez 'exit' ou 'quit' pour quitter.")
-    pending_recipe_ideas = False
+    pending_recipe_ideas: RecipeProposalSet | None = None
     while True:
         try:
             prompt = console.input("[bold cyan]Vous >[/bold cyan] ").strip()
@@ -225,34 +286,43 @@ def main() -> None:
             continue
         try:
             if args.profile == "chef":
-                if is_recipe_approval(prompt, pending_recipe_ideas):
+                if pending_recipe_ideas is not None:
+                    selected_number = parse_recipe_selection(prompt)
+                    if selected_number is None:
+                        console.print("[yellow]Choisissez un numéro de 1 à 5.[/yellow]")
+                        continue
                     saved_path = create_approved_recipe(
                         engine,
-                        prompt,
+                        pending_recipe_ideas,
+                        selected_number,
                         config["model"],
                     )
                     console.print(Markdown(saved_path.read_text(encoding="utf-8")))
                     console.print(
                         f"[bold green]Recette enregistrée:[/bold green] {saved_path}"
                     )
-                    pending_recipe_ideas = False
+                    pending_recipe_ideas = None
                     continue
-                engine.tool_schemas = available_chef_tool_schemas(
-                    schemas, prompt, pending_recipe_ideas=False
+                request = _include_photo_ingredients(prompt)
+                pending_recipe_ideas = generate_recipe_proposals(
+                    engine,
+                    request,
+                    profile_dir,
                 )
-            answer = engine.chat(prompt)
-            console.print(Markdown(answer))
-            if args.profile == "chef":
-                saved = any(
-                    message.get("role") == "tool"
-                    and message.get("name") == "save_recipe_markdown"
-                    and "/output/recipes/" in str(message.get("content", ""))
-                    for message in engine.messages
-                )
-                if saved:
-                    pending_recipe_ideas = False
-                elif has_three_recipe_ideas(answer):
-                    pending_recipe_ideas = True
+                for index, proposal in enumerate(
+                    pending_recipe_ideas.proposals,
+                    start=1,
+                ):
+                    console.print(
+                        f"{index}. [{proposal.category}] {proposal.title} — "
+                        f"{proposal.pitch}",
+                        no_wrap=True,
+                        overflow="ellipsis",
+                    )
+                console.print("[dim]Choisissez une idée avec son numéro (1-5).[/dim]")
+            else:
+                answer = engine.chat(prompt)
+                console.print(Markdown(answer))
         except Exception as exc:
             console.print(f"[red]Erreur:[/red] {exc}")
 

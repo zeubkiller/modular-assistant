@@ -1,12 +1,15 @@
 # Fond de placard disponible
 
-Ces ingrédients sont considérés comme toujours disponibles, sauf indication contraire de la famille:
+Considère ces ingrédients comme toujours disponibles et utilise-les librement,
+sauf si l'utilisateur indique qu'il en manque ou qu'ils ne conviennent pas:
 
-- Huiles: huile d'olive, huile neutre
-- Condiments: sel, poivre, vinaigre, moutarde, miel
-- Féculents: farine, riz, pâtes, pommes de terre, pain
-- Conserves: tomates pelées, légumineuses, maïs
-- Aromatiques: oignons, ail, échalotes, herbes fraîches ou séchées
-- Épices: paprika, cumin, curry, herbes de Provence
-- Produits frais courants: beurre, citron, lait ou crème
-- Bouillon: cubes ou bouillon maison
+- Huile d'olive et huile neutre
+- Beurre
+- Sel et poivre
+- Ail et oignon
+- Farine, riz et pâtes
+- Épices de base: paprika, cumin, curry doux, herbes séchées
+- Sauce soja
+- Vinaigre, moutarde et miel
+- Tomates en conserve, légumineuses et bouillon
+- Citron
