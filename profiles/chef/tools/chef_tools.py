@@ -5,6 +5,50 @@ from pathlib import Path
 from typing import Any
 
 import ollama
+from pydantic import BaseModel, Field, field_validator
+
+
+class RecipeData(BaseModel):
+    """Validated structured recipe supplied by the assistant."""
+
+    title: str = Field(min_length=1)
+    prep_time: str = Field(
+        min_length=1,
+        pattern=r"^\d+\s*(?:min(?:ute)?s?|h(?:eure)?s?)(?:\s+\d+\s*(?:min(?:ute)?s?))?$",
+        description="Durée réelle, par exemple '25 minutes' ou '1 h 15 min'.",
+    )
+    servings: int = Field(gt=0)
+    ingredients: list[str] = Field(min_length=1)
+    steps: list[str] = Field(min_length=1)
+    chef_tip: str = Field(min_length=1)
+
+    @field_validator("title", "prep_time", "chef_tip")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Text fields cannot be blank")
+        return value
+
+    @field_validator("ingredients")
+    @classmethod
+    def clean_ingredients(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values if value and value.strip()]
+        if not cleaned:
+            raise ValueError("Recipe ingredients cannot be empty")
+        return cleaned
+
+    @field_validator("steps")
+    @classmethod
+    def clean_steps(cls, values: list[str]) -> list[str]:
+        cleaned = [
+            re.sub(r"^\s*(?:\d+[.)]\s*)+", "", value.strip())
+            for value in values
+            if value and value.strip()
+        ]
+        if not cleaned:
+            raise ValueError("Recipe steps cannot be empty")
+        return cleaned
 
 
 def analyze_fridge_photo(
@@ -44,19 +88,52 @@ def analyze_fridge_photo(
     return str(content).strip()
 
 
-def save_recipe_markdown(title: str, content: str) -> str:
-    """Save a Markdown recipe under output/recipes and return its path."""
-    if not title or not isinstance(title, str):
-        raise ValueError("Recipe title is required")
-    if content is None:
-        raise ValueError("Recipe content is required")
+def save_recipe_markdown(
+    title: str,
+    prep_time: str,
+    servings: int,
+    ingredients: list[str],
+    steps: list[str],
+    chef_tip: str,
+) -> str:
+    """Validate a recipe, render the chef template, and save it as Markdown."""
+    recipe = RecipeData(
+        title=title,
+        prep_time=prep_time,
+        servings=servings,
+        ingredients=ingredients,
+        steps=steps,
+        chef_tip=chef_tip,
+    )
 
     repo_root = Path(__file__).resolve().parents[3]
     output_dir = repo_root / "output" / "recipes"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    stem = re.sub(r"[^a-zA-Z0-9]+", "-", title.strip().lower()).strip("-")
+    template_path = (
+        repo_root
+        / "profiles"
+        / "chef"
+        / "templates"
+        / "recipe_template.md"
+    )
+    template = template_path.read_text(encoding="utf-8")
+    rendered = template
+    replacements = {
+        "{title}": recipe.title,
+        "{prep_time}": recipe.prep_time,
+        "{servings}": str(recipe.servings),
+        "{ingredients}": "\n".join(f"- {item}" for item in recipe.ingredients),
+        "{steps}": "\n".join(
+            f"{index}. {step}" for index, step in enumerate(recipe.steps, start=1)
+        ),
+        "{chef_tip}": recipe.chef_tip,
+    }
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+
+    stem = re.sub(r"[^a-zA-Z0-9]+", "-", recipe.title.lower()).strip("-")
     stem = stem[:80] or "recette"
     output_path = output_dir / f"{stem}.md"
-    output_path.write_text(content, encoding="utf-8")
+    output_path.write_text(rendered, encoding="utf-8")
     return str(output_path)

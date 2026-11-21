@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -38,6 +39,14 @@ def test_rag_context_is_injected(mocker):
 
 def test_tool_call_is_executed(mocker):
     tool = mocker.Mock(return_value="Recette sauvegardée")
+    recipe_args = {
+        "title": "Soupe aux lentilles",
+        "prep_time": "30 minutes",
+        "servings": 4,
+        "ingredients": ["lentilles", "bouillon"],
+        "steps": ["Cuire les lentilles."],
+        "chef_tip": "Ajouter de l'huile d'olive.",
+    }
     client = mocker.Mock()
     client.chat.side_effect = [
         {
@@ -45,7 +54,7 @@ def test_tool_call_is_executed(mocker):
                 "content": "",
                 "tool_calls": [
                     {"function": {"name": "save_recipe_markdown",
-                                  "arguments": {"title": "Soupe", "content": "# Soupe"}}}
+                                  "arguments": recipe_args}}
                 ],
             }
         },
@@ -61,20 +70,28 @@ def test_tool_call_is_executed(mocker):
     result = engine.chat("Sauvegarde une soupe")
 
     assert result == "La recette est enregistrée."
-    tool.assert_called_once_with(title="Soupe", content="# Soupe")
+    tool.assert_called_once_with(**recipe_args)
     assert {"role": "tool", "name": "save_recipe_markdown",
             "content": "Recette sauvegardée"} in engine.messages
 
 
 def test_tool_exception_triggers_self_correction(mocker):
     tool = mocker.Mock(side_effect=[RuntimeError("disk full"), "saved"])
+    recipe_args = {
+        "title": "T",
+        "prep_time": "20 minutes",
+        "servings": 2,
+        "ingredients": ["riz"],
+        "steps": ["Cuire."],
+        "chef_tip": "Servir chaud.",
+    }
     client = mocker.Mock()
     client.chat.side_effect = [
         {"message": {"tool_calls": [{"function": {"name": "save_recipe_markdown",
-                                                  "arguments": {"title": "T", "content": "C"}}}],
+                                                  "arguments": recipe_args}}],
                      "content": ""}},
         {"message": {"tool_calls": [{"function": {"name": "save_recipe_markdown",
-                                                  "arguments": {"title": "T", "content": "C"}}}],
+                                                  "arguments": recipe_args}}],
                      "content": ""}},
         {"message": {"tool_calls": None, "content": "Erreur résolue"}},
     ]
@@ -92,13 +109,21 @@ def test_tool_exception_triggers_self_correction(mocker):
 
 def test_embedded_json_tool_call_is_executed(mocker):
     tool = mocker.Mock(return_value="Recette enregistrée")
+    recipe_args = {
+        "title": "Riz aux tomates",
+        "prep_time": "25 minutes",
+        "servings": 4,
+        "ingredients": ["riz", "tomates"],
+        "steps": ["Cuire le riz."],
+        "chef_tip": "Assaisonner au goût.",
+    }
     client = mocker.Mock()
     client.chat.side_effect = [
         {
             "message": {
                 "content": (
                     '{"name": "save_recipe_markdown", '
-                    '"arguments": {"title": "Riz aux tomates", "content": "# Recette"}}'
+                    '"arguments": ' + json.dumps(recipe_args, ensure_ascii=False) + '}'
                 ),
                 "tool_calls": None,
             }
@@ -114,4 +139,28 @@ def test_embedded_json_tool_call_is_executed(mocker):
     result = engine.chat("Tomates, riz")
 
     assert result == "Recette enregistrée."
-    tool.assert_called_once_with(title="Riz aux tomates", content="# Recette")
+    tool.assert_called_once_with(**recipe_args)
+
+
+def test_repeated_tool_call_is_not_executed_twice(mocker):
+    tool = mocker.Mock(return_value="/output/recipes/ris.md")
+    call = {
+        "function": {
+            "name": "save_recipe_markdown",
+            "arguments": {"title": "Riz"},
+        }
+    }
+    client = mocker.Mock()
+    client.chat.side_effect = [
+        {"message": {"content": "", "tool_calls": [call]}},
+        {"message": {"content": "", "tool_calls": [call]}},
+    ]
+    engine = ConversationEngine(
+        CONFIG,
+        tools={"save_recipe_markdown": tool},
+        ollama_client=client,
+        max_tool_rounds=2,
+    )
+
+    assert engine.chat("Sauvegarde la recette") == "/output/recipes/ris.md"
+    tool.assert_called_once_with(title="Riz")

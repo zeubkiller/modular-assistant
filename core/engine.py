@@ -32,6 +32,7 @@ class ConversationEngine:
         rag_index: Any | None = None,
         ollama_client: Any | None = None,
         max_corrections: int = 2,
+        max_tool_rounds: int = 3,
     ) -> None:
         self.config = config
         self.tools = tools
@@ -39,6 +40,7 @@ class ConversationEngine:
         self.rag_index = rag_index
         self.ollama = ollama_client or ollama
         self.max_corrections = max_corrections
+        self.max_tool_rounds = max_tool_rounds
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": config["system_prompt"]}
         ]
@@ -99,8 +101,13 @@ class ConversationEngine:
 
         self.messages.append({"role": "user", "content": content})
         correction_count = 0
+        tool_rounds = 0
+        completed_calls: dict[str, str] = {}
+        last_tool_result = ""
 
         while True:
+            if tool_rounds >= self.max_tool_rounds:
+                return last_tool_result
             kwargs: dict[str, Any] = {
                 "model": self.config["model"],
                 "messages": self.messages,
@@ -126,6 +133,7 @@ class ConversationEngine:
                 return assistant_content
             if not embedded_tool_calls:
                 self.messages.append(_as_dict(message))
+            tool_rounds += 1
             tool_error_found = False
 
             for call in tool_calls:
@@ -133,8 +141,6 @@ class ConversationEngine:
                 name = _get_field(function, "name", "")
                 arguments = _get_field(function, "arguments", {}) or {}
                 if isinstance(arguments, str):
-                    import json
-
                     try:
                         arguments = json.loads(arguments)
                     except json.JSONDecodeError as exc:
@@ -146,19 +152,30 @@ class ConversationEngine:
                         )
                         continue
 
-                tool = self.tools.get(name)
-                if tool is None:
-                    tool_error = f"Unknown tool: {name}"
-                    tool_error_found = True
+                signature = json.dumps(
+                    {"name": name, "arguments": arguments},
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    default=str,
+                )
+                if signature in completed_calls:
+                    tool_result = completed_calls[signature]
                 else:
-                    try:
-                        tool_error = tool(**arguments)
-                    except Exception as exc:
-                        tool_error = f"{type(exc).__name__}: {exc}"
+                    tool = self.tools.get(name)
+                    if tool is None:
+                        tool_result = f"Unknown tool: {name}"
                         tool_error_found = True
+                    else:
+                        try:
+                            tool_result = str(tool(**arguments))
+                            completed_calls[signature] = tool_result
+                        except Exception as exc:
+                            tool_result = f"{type(exc).__name__}: {exc}"
+                            tool_error_found = True
+                last_tool_result = str(tool_result)
 
                 self.messages.append(
-                    {"role": "tool", "name": name, "content": str(tool_error)}
+                    {"role": "tool", "name": name, "content": str(tool_result)}
                 )
 
             if tool_error_found and correction_count < self.max_corrections:

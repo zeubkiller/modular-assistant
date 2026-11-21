@@ -6,3 +6,4 @@ rich
 pillow
 pytest
 pytest-mock
+pydantic
