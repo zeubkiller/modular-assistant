@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Iterable
 
-import fitz
+import pymupdf
 import ollama
 
 
@@ -12,7 +12,7 @@ def _extract_text(path: Path) -> str:
     if suffix in {".txt", ".md"}:
         return path.read_text(encoding="utf-8", errors="replace")
     if suffix == ".pdf":
-        with fitz.open(path) as document:
+        with pymupdf.open(path) as document:
             return "\n".join(page.get_text() for page in document)
     return ""
 

@@ -2,7 +2,7 @@
 
 import argparse
 import importlib
-import json
+import re
 from pathlib import Path
 
 from rich.console import Console
@@ -14,6 +14,41 @@ from core.rag import RAGIndex
 
 
 console = Console()
+
+
+def extract_recipe_title(answer: str, prompt: str) -> str:
+    title_match = re.search(
+        r"(?:\*\*Titre\s*:\*\*|^#\s*|Titre\s*:)\s*(.+)",
+        answer,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if title_match:
+        return re.sub(r"[*#]+", "", title_match.group(1)).strip()
+
+    stopwords = {
+        "avec", "des", "du", "le", "les", "une", "un", "pour",
+        "dans", "et", "jai", "propose", "recette", "personnes",
+    }
+    words = [
+        word.lower()
+        for word in re.findall(r"[A-Za-zÀ-ÿ0-9]+", prompt)
+        if word.lower() not in stopwords and len(word) > 2
+    ]
+    selected = words[:5]
+    return "recette-" + "-".join(selected) if selected else "recette-maison"
+
+
+def save_chef_recipe_if_present(answer: str, prompt: str) -> Path | None:
+    recipe_markers = ("ingrédient", "ingredient", "préparation", "instruction", "titre")
+    lowered = answer.lower()
+    if not any(marker in lowered for marker in recipe_markers):
+        return None
+
+    from profiles.chef.tools.chef_tools import save_recipe_markdown
+
+    title = extract_recipe_title(answer, prompt)
+    saved = Path(save_recipe_markdown(title, answer))
+    return saved
 
 
 def get_profile_tools(profile_name: str, profile_dir: Path) -> tuple[dict, list[dict]]:
@@ -81,7 +116,7 @@ def main() -> None:
     engine = ConversationEngine(
         config,
         tools=tools,
-        tool_schemas=schemas,
+        tool_schemas=[],
         rag_index=rag,
     )
 
@@ -100,6 +135,12 @@ def main() -> None:
         try:
             answer = engine.chat(prompt)
             console.print(Markdown(answer))
+            if args.profile == "chef":
+                saved = save_chef_recipe_if_present(answer, prompt)
+                if saved is not None:
+                    console.print(
+                        f"[bold green]Recette enregistrée:[/bold green] {saved}"
+                    )
         except Exception as exc:
             console.print(f"[red]Erreur:[/red] {exc}")
 

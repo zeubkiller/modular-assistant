@@ -88,3 +88,30 @@ def test_tool_exception_triggers_self_correction(mocker):
 
     assert result == "Erreur résolue"
     assert tool.call_count == 2
+
+
+def test_embedded_json_tool_call_is_executed(mocker):
+    tool = mocker.Mock(return_value="Recette enregistrée")
+    client = mocker.Mock()
+    client.chat.side_effect = [
+        {
+            "message": {
+                "content": (
+                    '{"name": "save_recipe_markdown", '
+                    '"arguments": {"title": "Riz aux tomates", "content": "# Recette"}}'
+                ),
+                "tool_calls": None,
+            }
+        },
+        {"message": {"content": "Recette enregistrée.", "tool_calls": None}},
+    ]
+    engine = ConversationEngine(
+        CONFIG,
+        tools={"save_recipe_markdown": tool},
+        ollama_client=client,
+    )
+
+    result = engine.chat("Tomates, riz")
+
+    assert result == "Recette enregistrée."
+    tool.assert_called_once_with(title="Riz aux tomates", content="# Recette")

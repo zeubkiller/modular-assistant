@@ -1,6 +1,7 @@
 """Conversation loop, RAG context, tool calling and self-correction."""
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
+import json
 from typing import Any
 
 import ollama
@@ -53,6 +54,39 @@ class ConversationEngine:
             return ""
         return "\n\n".join(chunks)
 
+    @staticmethod
+    def _extract_embedded_tool_calls(content: str) -> list[dict[str, Any]]:
+        """Extract tool calls serialized as JSON objects inside model text."""
+        decoder = json.JSONDecoder()
+        calls: list[dict[str, Any]] = []
+        position = 0
+
+        while position < len(content):
+            start = content.find("{", position)
+            if start == -1:
+                break
+            try:
+                value, end = decoder.raw_decode(content[start:])
+            except json.JSONDecodeError:
+                position = start + 1
+                continue
+
+            position = start + end
+            if not isinstance(value, dict):
+                continue
+            function = value.get("function")
+            if isinstance(function, dict):
+                calls.append(value)
+            elif value.get("name") and isinstance(value.get("arguments"), (dict, str)):
+                calls.append({
+                    "function": {
+                        "name": value["name"],
+                        "arguments": value["arguments"],
+                    }
+                })
+
+        return calls
+
     def chat(self, prompt: str) -> str:
         """Send a user prompt and handle tool calls and retryable tool errors."""
         context = self._rag_context(prompt)
@@ -82,11 +116,16 @@ class ConversationEngine:
             tool_calls = _get_field(message, "tool_calls", None) or []
             assistant_content = _get_field(message, "content", "") or ""
 
+            embedded_tool_calls = False
+            if not tool_calls and assistant_content:
+                tool_calls = self._extract_embedded_tool_calls(assistant_content)
+                embedded_tool_calls = bool(tool_calls)
+
             if not tool_calls:
                 self.messages.append({"role": "assistant", "content": assistant_content})
                 return assistant_content
-
-            self.messages.append(_as_dict(message))
+            if not embedded_tool_calls:
+                self.messages.append(_as_dict(message))
             tool_error_found = False
 
             for call in tool_calls:
