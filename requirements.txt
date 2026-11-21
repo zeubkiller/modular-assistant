@@ -1,0 +1,8 @@
+ollama
+chromadb
+pymupdf
+pyyaml
+rich
+pillow
+pytest
+pytest-mock
