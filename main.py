@@ -3,6 +3,7 @@
 import argparse
 import importlib
 import re
+import time
 from pathlib import Path
 
 import ollama
@@ -13,6 +14,7 @@ from rich.markdown import Markdown
 from core.config_loader import ConfigError, load_config
 from core.engine import ConversationEngine
 from core.rag import RAGIndex
+from core.telemetry import record_performance_metric
 from profiles.chef.tools.chef_tools import (
     RecipeData,
     RecipeProposalSet,
@@ -71,6 +73,7 @@ def generate_recipe_proposals(
     engine: ConversationEngine,
     prompt: str,
     profile_dir: Path,
+    metrics_path: Path | None = None,
 ) -> RecipeProposalSet:
     """Generate five validated, compact ideas grounded in profile knowledge."""
     engine.reset()
@@ -79,42 +82,59 @@ def generate_recipe_proposals(
         f"INGRÉDIENTS, ENVIE ET DIRECTION DE L'UTILISATEUR:\n{prompt}\n\n"
         "Retourne exactement trois idées dans le tableau 'classiques' et deux "
         "dans 'explorations'. Chaque idée contient uniquement title et pitch. "
-        "Le pitch ne dépasse jamais dix mots."
+        "Le titre contient au plus quatre mots et le pitch au plus quatre mots."
     )
     messages = engine.messages + [{"role": "user", "content": request}]
-    for attempt in range(2):
-        response = engine.ollama.chat(
-            model=engine.config["model"],
-            messages=messages,
-            format=RecipeProposalSet.model_json_schema(),
-            options={**OLLAMA_DETERMINISTIC_OPTIONS, "num_predict": 500},
-        )
-        content = _response_content(response)
-        try:
-            proposals = RecipeProposalSet.model_validate_json(content)
-            break
-        except ValidationError as exc:
-            if attempt == 1:
-                raise
-            messages.extend(
-                [
-                    {"role": "assistant", "content": content},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Corrige la réponse précédente. Elle doit contenir "
-                            "exactement trois idées dans 'classiques' et deux "
-                            "dans 'explorations', chacune avec un pitch de dix "
-                            f"mots maximum. Erreur: {exc}"
-                        ),
-                    },
-                ]
+    started_at = time.perf_counter()
+    response = None
+    try:
+        for attempt in range(2):
+            response = engine.ollama.chat(
+                model=engine.config["model"],
+                messages=messages,
+                format=RecipeProposalSet.model_json_schema(),
+                options={
+                    **OLLAMA_DETERMINISTIC_OPTIONS,
+                    "num_ctx": 2048,
+                    "num_predict": 240,
+                    "num_thread": 4,
+                    "num_batch": 256,
+                },
             )
-    engine.messages = engine.messages + [
-        {"role": "user", "content": request},
-        {"role": "assistant", "content": content},
-    ]
-    return proposals
+            content = _response_content(response)
+            try:
+                proposals = RecipeProposalSet.model_validate_json(content)
+                break
+            except ValidationError as exc:
+                if attempt == 1:
+                    raise
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": content},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Corrige la réponse précédente. Elle doit contenir "
+                                "exactement trois idées dans 'classiques' et deux "
+                                "dans 'explorations', chacune avec un pitch de quatre "
+                                f"mots maximum. Erreur: {exc}"
+                            ),
+                        },
+                    ]
+                )
+        engine.messages = engine.messages + [
+            {"role": "user", "content": request},
+            {"role": "assistant", "content": content},
+        ]
+        return proposals
+    finally:
+        record_performance_metric(
+            "step1_total_ms",
+            (time.perf_counter() - started_at) * 1000,
+            response=response,
+            ollama_client=engine.ollama,
+            metrics_path=metrics_path,
+        )
 
 
 def parse_recipe_selection(prompt: str) -> int | None:
@@ -128,6 +148,7 @@ def create_approved_recipe(
     selected_number: int,
     model: str,
     output_dir: Path | None = None,
+    metrics_path: Path | None = None,
 ) -> Path:
     """Generate only the selected idea and render it using the recipe template."""
     selected = proposals.proposals[selected_number - 1]
@@ -138,49 +159,66 @@ def create_approved_recipe(
         f"Catégorie: {selected.category}\n"
         f"Titre: {selected.title}\n"
         f"Pitch: {selected.pitch}\n\n"
-        "Rédige uniquement cette recette, pour quatre personnes, avec des "
-        "quantités réalistes et des étapes concises."
+        "Rédige uniquement cette recette, pour quatre personnes. Limite la "
+        "réponse à cinq ingrédients, trois étapes courtes et un conseil bref."
     )
     messages = [
         engine.messages[0],
         {"role": "user", "content": request},
     ]
-    for attempt in range(2):
-        response = engine.ollama.chat(
-            model=model,
-            messages=messages,
-            format=RecipeData.model_json_schema(),
-            options={**OLLAMA_DETERMINISTIC_OPTIONS, "num_predict": 1200},
-        )
-        content = _response_content(response)
-        try:
-            generated = RecipeData.model_validate_json(content)
-            break
-        except ValidationError as exc:
-            if attempt == 1:
-                raise
-            messages.extend(
-                [
-                    {"role": "assistant", "content": content},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Corrige la recette en respectant strictement le "
-                            "schéma JSON, les durées chiffrées et tous les champs. "
-                            f"Erreur: {exc}"
-                        ),
-                    },
-                ]
+    started_at = time.perf_counter()
+    response = None
+    try:
+        for attempt in range(2):
+            response = engine.ollama.chat(
+                model=model,
+                messages=messages,
+                format=RecipeData.model_json_schema(),
+                options={
+                    **OLLAMA_DETERMINISTIC_OPTIONS,
+                    "num_ctx": 2048,
+                    "num_predict": 300,
+                    "num_thread": 4,
+                    "num_batch": 256,
+                },
             )
-    recipe = generated.model_copy(
-        update={"title": selected.title, "category": selected.category}
-    )
-    save_arguments = recipe.model_dump()
-    if output_dir is not None:
-        save_arguments["output_dir"] = output_dir
-    saved_path = Path(save_recipe_markdown(**save_arguments))
-    engine.messages = messages + [{"role": "assistant", "content": content}]
-    return saved_path
+            content = _response_content(response)
+            try:
+                generated = RecipeData.model_validate_json(content)
+                break
+            except ValidationError as exc:
+                if attempt == 1:
+                    raise
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": content},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Corrige la recette en respectant strictement le "
+                                "schéma JSON, les durées chiffrées et tous les champs. "
+                                f"Erreur: {exc}"
+                            ),
+                        },
+                    ]
+                )
+        recipe = generated.model_copy(
+            update={"title": selected.title, "category": selected.category}
+        )
+        save_arguments = recipe.model_dump()
+        if output_dir is not None:
+            save_arguments["output_dir"] = output_dir
+        saved_path = Path(save_recipe_markdown(**save_arguments))
+        engine.messages = messages + [{"role": "assistant", "content": content}]
+        return saved_path
+    finally:
+        record_performance_metric(
+            "step2_total_ms",
+            (time.perf_counter() - started_at) * 1000,
+            response=response,
+            ollama_client=engine.ollama,
+            metrics_path=metrics_path,
+        )
 
 
 def get_profile_tools(profile_name: str, profile_dir: Path) -> tuple[dict, list[dict]]:

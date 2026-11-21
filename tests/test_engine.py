@@ -111,6 +111,28 @@ def test_tool_exception_triggers_self_correction(mocker):
     assert tool.call_count == 2
 
 
+def test_tool_failures_stop_after_two_corrections(mocker):
+    tool = mocker.Mock(side_effect=RuntimeError("repeat failure"))
+    call = {
+        "function": {
+            "name": "save_recipe_markdown",
+            "arguments": {"title": "test"},
+        }
+    }
+    client = mocker.Mock()
+    client.chat.return_value = {"message": {"tool_calls": [call], "content": ""}}
+    engine = ConversationEngine(
+        CONFIG,
+        tools={"save_recipe_markdown": tool},
+        ollama_client=client,
+        max_corrections=2,
+    )
+
+    assert engine.chat("Sauvegarde") == "RuntimeError: repeat failure"
+    assert tool.call_count == 3
+    assert client.chat.call_count == 3
+
+
 def test_embedded_json_tool_call_is_executed(mocker):
     tool = mocker.Mock(return_value="Recette enregistrée")
     recipe_args = {

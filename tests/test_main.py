@@ -16,11 +16,11 @@ def proposal_payload():
         "classiques": [
             {"title": "Poulet au riz", "pitch": "Simple et familial."},
             {"title": "Courgettes rôties", "pitch": "Douces et méditerranéennes."},
-            {"title": "Lentilles mijotées", "pitch": "Un plat nourrissant et doux."},
+            {"title": "Lentilles mijotées", "pitch": "Nourrissant et doux."},
         ],
         "explorations": [
             {"title": "Riz sauté", "pitch": "Inspiré des saveurs asiatiques."},
-            {"title": "Curry de légumes", "pitch": "Une touche indienne peu épicée."},
+            {"title": "Curry de légumes", "pitch": "Indien doux et parfumé."},
         ],
     }
 
@@ -60,7 +60,7 @@ def test_generate_recipe_proposals_uses_profile_knowledge(tmp_path, mocker):
     assert kwargs["options"]["seed"] == 42
 
 
-def test_generate_recipe_proposals_retries_invalid_distribution(tmp_path, mocker):
+def test_generate_recipe_proposals_retries_invalid_pitch(tmp_path, mocker):
     family = tmp_path / "knowledge"
     family.mkdir()
     (family / "family_preferences.md").write_text("Aucune allergie.", encoding="utf-8")

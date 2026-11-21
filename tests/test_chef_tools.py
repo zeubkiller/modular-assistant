@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 from pydantic import ValidationError
@@ -18,17 +19,27 @@ def test_analyze_fridge_photo_missing_file():
 def test_analyze_fridge_photo_uses_moondream(tmp_path, mocker):
     image = tmp_path / "fridge.jpg"
     image.write_bytes(b"fake-image")
+    metrics_path = tmp_path / "perf_metrics.jsonl"
     client = mocker.Mock()
     client.chat.return_value = {"message": {"content": "tomates, oeufs"}}
+    client.ps.return_value = {"models": []}
 
-    result = analyze_fridge_photo(str(image), ollama_client=client)
+    result = analyze_fridge_photo(
+        str(image),
+        ollama_client=client,
+        metrics_path=metrics_path,
+    )
 
     assert result == "tomates, oeufs"
     client.chat.assert_called_once()
     call = client.chat.call_args.kwargs
     assert call["model"] == "moondream"
     assert call["keep_alive"] == 0
+    assert call["options"] == {"temperature": 0.0, "seed": 42}
     assert str(image.resolve()) in call["messages"][0]["images"]
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert metrics["vision_inference_ms"] < 12_000
+    assert metrics["ollama_model_ram_mb"] == 0
 
 
 def test_save_recipe_markdown(tmp_path, mocker):
@@ -41,6 +52,7 @@ def test_save_recipe_markdown(tmp_path, mocker):
         ingredients=["200 g de lentilles", "1 oignon", "1 L de bouillon"],
         steps=["1. Couper l'oignon.", "2. Cuire les lentilles dans le bouillon."],
         chef_tip="Ajouter un filet d'huile d'olive.",
+        output_dir=tmp_path / "recipes",
     ))
     try:
         assert path.is_file()
@@ -136,12 +148,12 @@ def test_proposal_set_rejects_wrong_category_distribution():
         )
 
 
-def test_proposal_pitch_cannot_exceed_ten_words():
-    with pytest.raises(ValidationError, match="at most 10 words"):
+def test_proposal_pitch_cannot_exceed_four_words():
+    with pytest.raises(ValidationError, match="at most 4 words"):
         RecipeProposalSet.model_validate(
             {
                 "classiques": [
-                    {"title": "Idée", "pitch": " ".join(["mot"] * 11)},
+                    {"title": "Idée", "pitch": "un deux trois quatre cinq"},
                     {"title": "Deux", "pitch": "Simple et familial."},
                     {"title": "Trois", "pitch": "Facile et gourmand."},
                 ],

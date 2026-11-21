@@ -6,8 +6,11 @@ from typing import Any
 import yaml
 
 
-class ConfigError(ValueError):
+class ConfigurationError(ValueError):
     """Raised when a profile configuration is missing or invalid."""
+
+
+ConfigError = ConfigurationError
 
 
 def load_config(profile: str | Path, base_dir: str | Path | None = None) -> dict[str, Any]:
@@ -30,12 +33,15 @@ def load_config(profile: str | Path, base_dir: str | Path | None = None) -> dict
     if not isinstance(config, dict):
         raise ConfigError("The profile configuration must be a YAML mapping")
 
-    required = ("name", "model", "system_prompt")
+    if "profile_name" not in config and config.get("name"):
+        config["profile_name"] = config["name"]
+
+    required = ("profile_name", "model", "system_prompt", "tools")
     missing = [key for key in required if not config.get(key)]
     if missing:
         raise ConfigError(f"Missing required configuration fields: {', '.join(missing)}")
 
-    tools = config.get("tools", [])
+    tools = config["tools"]
     if not isinstance(tools, list):
         raise ConfigError("Configuration field 'tools' must be a list")
 

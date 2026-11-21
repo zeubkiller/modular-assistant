@@ -1,11 +1,14 @@
 """Chef profile tools."""
 
 import re
+import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import ollama
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from core.telemetry import record_performance_metric
 
 
 class RecipeIdea(BaseModel):
@@ -13,23 +16,23 @@ class RecipeIdea(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    title: str = Field(min_length=1, max_length=48)
-    pitch: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=36)
+    pitch: str = Field(min_length=1, max_length=32)
 
     @field_validator("title")
     @classmethod
     def validate_short_title(cls, value: str) -> str:
         value = value.strip()
-        if len(value.split()) > 6:
-            raise ValueError("Proposal titles must contain at most 6 words")
+        if len(value.split()) > 4:
+            raise ValueError("Proposal titles must contain at most 4 words")
         return value
 
     @field_validator("pitch")
     @classmethod
     def validate_short_pitch(cls, value: str) -> str:
         value = value.strip()
-        if len(value.split()) > 10:
-            raise ValueError("Proposal pitches must contain at most 10 words")
+        if len(value.split()) > 4:
+            raise ValueError("Proposal pitches must contain at most 4 words")
         return value
 
 
@@ -65,7 +68,7 @@ class RecipeData(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    title: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=60)
     category: Literal["Classique", "Exploration"]
     prep_time: str = Field(
         min_length=1,
@@ -78,9 +81,15 @@ class RecipeData(BaseModel):
         description="Durée réelle, par exemple '20 minutes' ou '1 h'.",
     )
     servings: int = Field(gt=0)
-    ingredients: list[str] = Field(min_length=1)
-    steps: list[str] = Field(min_length=1)
-    chef_tip: str = Field(min_length=1)
+    ingredients: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        min_length=1,
+        max_length=5,
+    )
+    steps: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
+        min_length=1,
+        max_length=3,
+    )
+    chef_tip: str = Field(min_length=1, max_length=120)
 
     @field_validator("title", "prep_time", "chef_tip")
     @classmethod
@@ -114,6 +123,7 @@ class RecipeData(BaseModel):
 def analyze_fridge_photo(
     image_path: str,
     ollama_client: Any | None = None,
+    metrics_path: str | Path | None = None,
 ) -> str:
     """Analyze a fridge photo with the local Moondream vision model."""
     if not image_path or not isinstance(image_path, str):
@@ -124,20 +134,32 @@ def analyze_fridge_photo(
         raise FileNotFoundError(f"Image file not found: {path}")
 
     client = ollama_client or ollama
-    response = client.chat(
-        model="moondream",
-        keep_alive=0,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Liste uniquement les ingrédients alimentaires visibles dans cette "
-                    "photo, avec une liste simple séparée par des virgules."
-                ),
-                "images": [str(path.resolve())],
-            }
-        ],
-    )
+    started_at = time.perf_counter()
+    response = None
+    try:
+        response = client.chat(
+            model="moondream",
+            keep_alive=0,
+            options={"temperature": 0.0, "seed": 42},
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Liste uniquement les ingrédients alimentaires visibles dans cette "
+                        "photo, avec une liste simple séparée par des virgules."
+                    ),
+                    "images": [str(path.resolve())],
+                }
+            ],
+        )
+    finally:
+        record_performance_metric(
+            "vision_inference_ms",
+            (time.perf_counter() - started_at) * 1000,
+            response=response,
+            ollama_client=client,
+            metrics_path=metrics_path,
+        )
     message = getattr(response, "message", None)
     if isinstance(response, dict):
         message = response.get("message")

@@ -182,4 +182,4 @@ class ConversationEngine:
                 correction_count += 1
                 continue
             if tool_error_found:
-                return str(tool_error)
+                return last_tool_result
