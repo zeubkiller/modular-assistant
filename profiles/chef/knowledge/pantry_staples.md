@@ -1,15 +1,4 @@
-# Fond de placard disponible
-
-Considère ces ingrédients comme toujours disponibles et utilise-les librement,
-sauf si l'utilisateur indique qu'il en manque ou qu'ils ne conviennent pas:
-
-- Huile d'olive et huile neutre
-- Beurre
-- Sel et poivre
-- Ail et oignon
-- Farine, riz et pâtes
-- Épices de base: paprika, cumin, curry doux, herbes séchées
-- Sauce soja
-- Vinaigre, moutarde et miel
-- Tomates en conserve, légumineuses et bouillon
-- Citron
+Toujours disponibles sauf indication contraire: huiles d'olive et neutre,
+beurre, sel, poivre, ail, oignon, farine, riz, pâtes, paprika, cumin, curry
+doux, herbes séchées, sauce soja, vinaigre, moutarde, miel, tomates en
+conserve, légumineuses, bouillon et citron.

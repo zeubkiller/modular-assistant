@@ -1,0 +1,1 @@
+TITRE: Lentilles mijotées | TAGS: végétarien, économique, mijoté | INGRÉDIENTS: lentilles, tomate, oignon, ail, eau | ÉTAPES: Faire revenir oignon et ail; ajouter lentilles et tomate; cuire jusqu'à tendreté.

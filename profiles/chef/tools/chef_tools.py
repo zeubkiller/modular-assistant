@@ -14,10 +14,20 @@ from core.telemetry import record_performance_metric
 class RecipeIdea(BaseModel):
     """A compact idea containing only its title and short pitch."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    title: str = Field(min_length=1, max_length=36)
-    pitch: str = Field(min_length=1, max_length=32)
+    title: str = Field(
+        min_length=1,
+        max_length=16,
+        alias="t",
+        description="Short dish title, at most four words",
+    )
+    pitch: str = Field(
+        min_length=1,
+        max_length=16,
+        alias="p",
+        description="Short pitch, at most four words",
+    )
 
     @field_validator("title")
     @classmethod
@@ -37,22 +47,74 @@ class RecipeIdea(BaseModel):
 
 
 class RecipeProposalSet(BaseModel):
-    """Exactly three familiar and two exploratory recipe ideas."""
+    """Two familiar and one exploratory recipe idea."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    classiques: list[RecipeIdea] = Field(min_length=3, max_length=3)
-    explorations: list[RecipeIdea] = Field(min_length=2, max_length=2)
+    classiques: list[tuple[str, str]] = Field(
+        min_length=2,
+        max_length=2,
+        alias="c",
+        description="Two familiar ideas, each as [title, pitch]",
+    )
+    explorations: list[tuple[str, str]] = Field(
+        min_length=1,
+        max_length=1,
+        alias="e",
+        description="One exploratory idea as [title, pitch]",
+    )
+
+    @field_validator("classiques", "explorations")
+    @classmethod
+    def validate_ideas(cls, values: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        for title, pitch in values:
+            RecipeIdea(title=title.strip(), pitch=pitch.strip())
+        return values
 
     @property
     def proposals(self) -> list["RecipeProposal"]:
         return [
-            RecipeProposal(title=idea.title, pitch=idea.pitch, category="Classique")
-            for idea in self.classiques
+            RecipeProposal(title=title.strip(), pitch=pitch.strip(), category="Classique")
+            for title, pitch in self.classiques
         ] + [
-            RecipeProposal(title=idea.title, pitch=idea.pitch, category="Exploration")
-            for idea in self.explorations
+            RecipeProposal(
+                title=title.strip(),
+                pitch=pitch.strip(),
+                category="Exploration",
+            )
+            for title, pitch in self.explorations
         ]
+
+
+RECIPE_PROPOSAL_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "c": {
+            "type": "array",
+            "items": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 16},
+                "minItems": 2,
+                "maxItems": 2,
+            },
+            "minItems": 2,
+            "maxItems": 2,
+        },
+        "e": {
+            "type": "array",
+            "items": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 16},
+                "minItems": 2,
+                "maxItems": 2,
+            },
+            "minItems": 1,
+            "maxItems": 1,
+        },
+    },
+    "required": ["c", "e"],
+    "additionalProperties": False,
+}
 
 
 class RecipeProposal(BaseModel):
@@ -66,30 +128,32 @@ class RecipeProposal(BaseModel):
 class RecipeData(BaseModel):
     """Validated structured recipe supplied by the assistant."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    title: str = Field(min_length=1, max_length=60)
-    category: Literal["Classique", "Exploration"]
+    title: str = Field(min_length=1, max_length=40, alias="t")
+    category: Literal["Classique", "Exploration"] = Field(alias="c")
     prep_time: str = Field(
         min_length=1,
         pattern=r"^\d+\s*(?:min(?:ute)?s?|h(?:eure)?s?)(?:\s+\d+\s*(?:min(?:ute)?s?))?$",
-        description="Durée réelle, par exemple '25 minutes' ou '1 h 15 min'.",
+        alias="p",
     )
     cook_time: str = Field(
         min_length=1,
         pattern=r"^\d+\s*(?:min(?:ute)?s?|h(?:eure)?s?)(?:\s+\d+\s*(?:min(?:ute)?s?))?$",
-        description="Durée réelle, par exemple '20 minutes' ou '1 h'.",
+        alias="k",
     )
-    servings: int = Field(gt=0)
-    ingredients: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+    servings: int = Field(gt=0, alias="n")
+    ingredients: list[Annotated[str, Field(min_length=1, max_length=48)]] = Field(
         min_length=1,
         max_length=5,
+        alias="i",
     )
-    steps: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
-        min_length=1,
-        max_length=3,
+    steps: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        min_length=4,
+        max_length=4,
+        alias="s",
     )
-    chef_tip: str = Field(min_length=1, max_length=120)
+    chef_tip: str = Field(min_length=1, max_length=40, alias="h")
 
     @field_validator("title", "prep_time", "chef_tip")
     @classmethod
@@ -118,6 +182,33 @@ class RecipeData(BaseModel):
         if not cleaned:
             raise ValueError("Recipe steps cannot be empty")
         return cleaned
+
+
+RECIPE_DATA_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "t": {"type": "string", "minLength": 1, "maxLength": 40},
+        "c": {"type": "string", "enum": ["Classique", "Exploration"]},
+        "p": {"type": "string"},
+        "k": {"type": "string"},
+        "n": {"type": "integer", "minimum": 1},
+        "i": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 48},
+            "minItems": 1,
+            "maxItems": 5,
+        },
+        "s": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 64},
+            "minItems": 4,
+            "maxItems": 4,
+        },
+        "h": {"type": "string", "minLength": 1, "maxLength": 40},
+    },
+    "required": ["t", "c", "p", "k", "n", "i", "s", "h"],
+    "additionalProperties": False,
+}
 
 
 def analyze_fridge_photo(

@@ -6,12 +6,14 @@ import time
 import pymupdf
 import ollama
 
+from core.prompt_budget import estimate_tokens
 from core.telemetry import record_performance_metric
 
 
-MAX_CHUNK_WORDS = 200
-MAX_CONTEXT_WORDS = 600
-MAX_QUERY_RESULTS = 3
+MAX_CHUNK_WORDS = 120
+MAX_CONTEXT_TOKENS = 250
+MAX_QUERY_RESULTS = 2
+RECIPE_CARD_FIELDS = ("TITRE:", "TAGS:", "INGRÉDIENTS:", "ÉTAPES:")
 
 
 def _chunks(text: str, max_words: int = MAX_CHUNK_WORDS) -> list[str]:
@@ -42,12 +44,14 @@ class RAGIndex:
         collection_name: str = "profile_knowledge",
         embed_model: str = "nomic-embed-text",
         metrics_path: str | Path | None = None,
+        recipe_cards_only: bool = False,
     ) -> None:
         self.knowledge_dir = Path(knowledge_dir)
         self.persist_dir = Path(persist_dir)
         self.collection_name = collection_name
         self.embed_model = embed_model
         self.metrics_path = Path(metrics_path) if metrics_path is not None else None
+        self.recipe_cards_only = recipe_cards_only
         self._client = None
         self._collection = None
 
@@ -78,13 +82,30 @@ class RAGIndex:
         ids: list[str] = []
         metadatas: list[dict[str, str]] = []
         if self.knowledge_dir.is_dir():
-            for path in sorted(self.knowledge_dir.rglob("*")):
-                if path.is_file() and path.suffix.lower() in {".txt", ".md", ".pdf"}:
-                    text = _extract_text(path)
-                    for index, chunk_text in enumerate(_chunks(text)):
-                        chunks.append(chunk_text)
-                        ids.append(f"{path.name}-{index}")
-                        metadatas.append({"source": str(path)})
+            paths = (
+                sorted(self.knowledge_dir.rglob("*.md"))
+                if self.recipe_cards_only
+                else sorted(self.knowledge_dir.rglob("*"))
+            )
+            for path in paths:
+                if not path.is_file():
+                    continue
+                if self.recipe_cards_only:
+                    text = path.read_text(encoding="utf-8").strip()
+                    self._validate_recipe_card(path, text)
+                    file_chunks = [text]
+                elif path.suffix.lower() in {".txt", ".md", ".pdf"}:
+                    file_chunks = _chunks(_extract_text(path))
+                else:
+                    continue
+
+                for index, chunk_text in enumerate(file_chunks):
+                    chunks.append(chunk_text)
+                    ids.append(f"{path.stem}-{index}")
+                    metadata = {"source": str(path)}
+                    if self.recipe_cards_only:
+                        metadata["kind"] = "recipe_card"
+                    metadatas.append(metadata)
 
         if chunks:
             embeddings = [self._embed(chunk) for chunk in chunks]
@@ -96,7 +117,23 @@ class RAGIndex:
             )
         return len(chunks)
 
-    def query(self, text: str, n_results: int = 4) -> list[str]:
+    @staticmethod
+    def _validate_recipe_card(path: Path, text: str) -> None:
+        fields = [field.strip() for field in text.split("|")]
+        if (
+            len(fields) != len(RECIPE_CARD_FIELDS)
+            or any(
+                not field.startswith(expected)
+                for field, expected in zip(fields, RECIPE_CARD_FIELDS)
+            )
+        ):
+            raise ValueError(
+                f"Recipe card must contain TITRE | TAGS | INGRÉDIENTS | ÉTAPES: {path}"
+            )
+        if estimate_tokens(text) >= 120:
+            raise ValueError(f"Recipe card must be under 120 estimated tokens: {path}")
+
+    def query(self, text: str, n_results: int = 2) -> list[str]:
         """Return the most relevant indexed document chunks."""
         started_at = time.perf_counter()
         try:
@@ -115,29 +152,33 @@ class RAGIndex:
             if collection_count == 0:
                 return []
             embedding = self._embed(text)
-            result = self._collection.query(
-                query_embeddings=[embedding],
-                n_results=min(max(1, n_results), MAX_QUERY_RESULTS, collection_count),
-                include=["documents", "metadatas"],
-            )
+            query_kwargs = {
+                "query_embeddings": [embedding],
+                "n_results": min(max(1, n_results), MAX_QUERY_RESULTS, collection_count),
+                "include": ["documents", "metadatas"],
+            }
+            if self.recipe_cards_only:
+                query_kwargs["where"] = {"kind": "recipe_card"}
+            result = self._collection.query(**query_kwargs)
             documents = result.get("documents", [[]])[0]
             metadatas = result.get("metadatas", [[]])[0]
             context: list[str] = []
-            words_left = MAX_CONTEXT_WORDS
+            tokens_used = 0
             for document, metadata in zip(
                 documents[:MAX_QUERY_RESULTS],
                 metadatas[:MAX_QUERY_RESULTS],
             ):
-                source = metadata.get("source", "unknown")
-                chunk = f"[Source: {source}]\n{document}"
-                chunk_words = chunk.split()
-                if len(chunk_words) > words_left:
-                    chunk = " ".join(chunk_words[:words_left])
+                if self.recipe_cards_only:
+                    chunk = document
+                else:
+                    source = metadata.get("source", "unknown")
+                    chunk = f"[Source: {source}]\n{document}"
+                chunk_tokens = estimate_tokens(chunk)
+                if tokens_used + chunk_tokens > MAX_CONTEXT_TOKENS:
+                    break
                 if chunk:
                     context.append(chunk)
-                    words_left -= len(chunk.split())
-                if words_left <= 0:
-                    break
+                    tokens_used += chunk_tokens
             return context
         finally:
             record_performance_metric(

@@ -1,9 +1,12 @@
 """Profile YAML loading and validation."""
 
+import os
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from core.profile_loader import format_food_profile, load_food_profile
 
 
 class ConfigurationError(ValueError):
@@ -33,6 +36,13 @@ def load_config(profile: str | Path, base_dir: str | Path | None = None) -> dict
     if not isinstance(config, dict):
         raise ConfigError("The profile configuration must be a YAML mapping")
 
+    model_override = os.environ.get("OLLAMA_MODEL")
+    if model_override is not None:
+        model_override = model_override.strip()
+        if not model_override:
+            raise ConfigError("Environment variable OLLAMA_MODEL must not be empty")
+        config["model"] = model_override
+
     if "profile_name" not in config and config.get("name"):
         config["profile_name"] = config["name"]
 
@@ -44,6 +54,10 @@ def load_config(profile: str | Path, base_dir: str | Path | None = None) -> dict
     tools = config["tools"]
     if not isinstance(tools, list):
         raise ConfigError("Configuration field 'tools' must be a list")
+
+    if config["profile_name"] == "chef":
+        fixed_profile = format_food_profile(load_food_profile())
+        config["system_prompt"] = f"{fixed_profile}\n\n{config['system_prompt']}"
 
     config["_profile_dir"] = str(config_path.parent)
     config["_config_path"] = str(config_path)

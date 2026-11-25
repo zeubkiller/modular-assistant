@@ -50,7 +50,12 @@ def test_save_recipe_markdown(tmp_path, mocker):
         cook_time="25 minutes",
         servings=4,
         ingredients=["200 g de lentilles", "1 oignon", "1 L de bouillon"],
-        steps=["1. Couper l'oignon.", "2. Cuire les lentilles dans le bouillon."],
+        steps=[
+            "1. Couper l'oignon.",
+            "2. Faire revenir l'oignon.",
+            "3. Ajouter les lentilles et le bouillon.",
+            "4. Cuire jusqu'à tendreté.",
+        ],
         chef_tip="Ajouter un filet d'huile d'olive.",
         output_dir=tmp_path / "recipes",
     ))
@@ -113,36 +118,33 @@ def test_save_recipe_markdown_requires_numeric_prep_time():
         )
 
 
-def test_proposal_set_requires_three_classics_and_two_explorations():
+def test_proposal_set_requires_two_classics_and_one_exploration():
     validated = RecipeProposalSet.model_validate(
         {
-            "classiques": [
-                {"title": f"Idée {index}", "pitch": "Repas simple et familial."}
-                for index in range(1, 4)
+            "c": [
+                (f"Idée {index}", "Repas simple.")
+                for index in range(1, 3)
             ],
-            "explorations": [
-                {"title": f"Idée {index}", "pitch": "Saveurs nouvelles et douces."}
-                for index in range(4, 6)
-            ],
+            "e": [("Idée 3", "Inédit")],
         }
     )
 
-    assert len(validated.proposals) == 5
-    assert [idea.category for idea in validated.proposals].count("Classique") == 3
-    assert [idea.category for idea in validated.proposals].count("Exploration") == 2
+    assert len(validated.proposals) == 3
+    assert [idea.category for idea in validated.proposals].count("Classique") == 2
+    assert [idea.category for idea in validated.proposals].count("Exploration") == 1
 
 
 def test_proposal_set_rejects_wrong_category_distribution():
     with pytest.raises(ValidationError):
         RecipeProposalSet.model_validate(
             {
-                "classiques": [
-                    {"title": "Une", "pitch": "Simple et familial."},
-                    {"title": "Deux", "pitch": "Facile et gourmand."},
+                "c": [
+                    ("Une", "Simple familial"),
+                    ("Deux", "Facile gourmand."),
                 ],
-                "explorations": [
-                    {"title": "Trois", "pitch": "Saveurs du monde."},
-                    {"title": "Quatre", "pitch": "Une recette originale."},
+                "e": [
+                    ("Trois", "Saveurs du monde"),
+                    ("Quatre", "Recette originale."),
                 ],
             }
         )
@@ -152,14 +154,10 @@ def test_proposal_pitch_cannot_exceed_four_words():
     with pytest.raises(ValidationError, match="at most 4 words"):
         RecipeProposalSet.model_validate(
             {
-                "classiques": [
-                    {"title": "Idée", "pitch": "un deux trois quatre cinq"},
-                    {"title": "Deux", "pitch": "Simple et familial."},
-                    {"title": "Trois", "pitch": "Facile et gourmand."},
+                "c": [
+                    ("Idée", "a b c d e"),
+                    ("Deux", "Simple familial"),
                 ],
-                "explorations": [
-                    {"title": "Quatre", "pitch": "Saveurs du monde."},
-                    {"title": "Cinq", "pitch": "Une recette originale."},
-                ],
+                "e": [("Trois", "Saveurs du monde")],
             }
         )

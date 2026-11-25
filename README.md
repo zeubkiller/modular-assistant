@@ -39,12 +39,22 @@ portable-ai-core/
 
 * **LLM Engine:** [Ollama](https://ollama.com) (Local execution on CPU/GPU)
 * **Edge Models (Calibrated for 8GB RAM):**
-  * `qwen2.5-coder:3b` — Logical reasoning, code/file generation, and native Tool Calling.
+  * `qwen2.5-coder:3b` — Default reasoning model.
+  * `qwen2.5:1.5b` — Recommended faster CPU option for Raspberry Pi.
   * `moondream` — Lightweight vision-language model for fridge/component photo analysis.
   * `nomic-embed-text` — Local embeddings for document and preference retrieval.
 * **Knowledge Base (RAG):** `ChromaDB` + `PyMuPDF` (Clean extraction of PDFs, Markdown, and text).
 * **Testing & Quality:** `pytest` + `pytest-mock` (Fast, deterministic offline test suite).
 * **Interface:** `Rich` (Interactive CLI).
+
+### Inference latency and memory
+
+Chef requests use a 2,048-token context window, four CPU threads and keep the
+reasoning model resident (`model_keep_alive: -1`). The fixed dietary profile
+from `data/profil_alimentaire.yaml` is prepended to the system prompt. Only
+short recipe cards from `profiles/chef/knowledge/recipes/` are retrieved as
+RAG examples (at most two, 250 estimated tokens); the complete request is
+limited to 550 estimated tokens. The CLI warms the model at startup.
 
 ---
 
@@ -59,6 +69,7 @@ sudo apt update && sudo apt install -y python3-pip python3-venv git portaudio19-
 ```bash
 curl -fsSL https://ollama.cominstall.sh | sh
 ollama pull qwen2.5-coder:3b
+ollama pull qwen2.5:1.5b
 ollama pull nomic-embed-text
 ollama pull moondream
 ```
@@ -77,20 +88,20 @@ pip install -r requirements.txt
 # Run the automated test suite
 pytest
 
-# Run live end-to-end tests (requires Ollama and qwen2.5-coder:3b)
-pytest -m e2e
+# Run live end-to-end tests with the faster CPU model
+OLLAMA_MODEL=qwen2.5:1.5b pytest -m e2e
 
 # Show prompts, model responses, and generated Markdown
 pytest -m e2e --e2e-debug
 
-# Start the Personal Chef assistant
-python main.py --profile chef
+# Start the Personal Chef assistant with the fast CPU model
+OLLAMA_MODEL=qwen2.5:1.5b python main.py --profile chef
 ```
 
 ### Chef's two-stage workflow
 Enter available ingredients and a direction (for example, `chicken, zucchini,
 rice; quick dinner`). The assistant displays three familiar and two exploratory
-ideas, each on one compact line. Enter a number from `1` to `5` to generate and
+ideas, each on one compact line. Enter a number from `1` to `3` to generate and
 save only that recipe under `output/recipes/`. To include a fridge photo, enter
 its image path in the same request as any typed ingredients.
 

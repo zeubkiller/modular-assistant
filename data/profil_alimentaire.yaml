@@ -1,0 +1,47 @@
+allergies_strictes:
+  - arachides
+  - fruits à coque
+  - crustacés
+
+preferences:
+  a_eviter:
+    - plats très sucrés
+    - fritures
+    - coriandre
+  apprecie:
+    - cuisine méditerranéenne
+    - plats mijotés
+    - recettes rapides
+
+reperes_par_personne:
+  proteines: 130g cru
+  feculents: 150g cuit
+  legumes: 200g min
+  matieres_grasses: 10g huile
+
+placard_de_base:
+  assaisonnements:
+    - sel
+    - poivre
+    - huile d'olive
+    - beurre
+    - vinaigre
+    - moutarde
+    - sauce soja
+  aromates:
+    - ail
+    - oignon
+    - herbes de Provence
+    - épices douces
+  basiques_secs:
+    - pâtes
+    - riz
+    - farine
+    - oeufs
+    - tomates concassées
+
+regles:
+  - Utiliser en priorité les ingrédients frais donnés.
+  - Compléter uniquement avec le placard_de_base.
+  - Respecter strictement les allergies.
+  - Adapter les quantités au nombre de personnes.

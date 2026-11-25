@@ -10,7 +10,9 @@ The software is developed on an x86_64 Intel VM (4 vCPUs, 8GB RAM) and targets s
 
 * **Network:** 100% Offline during execution (zero external API calls).
 * **Memory Ceiling:** Total system RAM footprint (Python process + ChromaDB + active Ollama model) must never exceed **5.5 GB** to prevent OS swapping on SD/NVMe storage.
-* **Model Swapping Rule:** Vision models (`moondream`) must unload immediately after inference (`keep_alive=0`) before loading the text reasoning model (`qwen2.5-coder:3b`).
+* **Model Configuration:** `OLLAMA_MODEL` overrides the profile's default reasoning model; `qwen2.5:1.5b` is the recommended CPU option for Raspberry Pi.
+* **Inference Settings:** Text requests use `num_ctx=2048`, `num_thread=4`, and `keep_alive=-1`. Vision inference continues to unload its model with `keep_alive=0`.
+* **Model Warmup:** E2E tests warm the configured reasoning model before timing inference, then unload it at session end. Application startup also warms the selected model.
 * **Display Constraint:** Small screen form factor. Intermediate choices must be ultra-compact (max 1 line per item). Final outputs must use clean, predictable Markdown templates.
 
 ---
@@ -23,7 +25,7 @@ Every pipeline execution logs telemetry to `output/logs/perf_metrics.jsonl`. **A
 | :--- | :--- | :--- | :--- |
 | **RAG Retrieval** | `rag_retrieval_ms` | `< 250 ms` | `1,000 ms` (1.0 s) |
 | **Vision Analysis (`moondream`)** | `vision_inference_ms` | `< 4,000 ms` | `12,000 ms` (12.0 s) |
-| **Step 1: 5 Proposals (`qwen2.5`)** | `step1_total_ms` | `< 4,000 ms` | `15,000 ms` (15.0 s) |
+| **Step 1: 3 Proposals (`qwen2.5`)** | `step1_total_ms` | `< 4,000 ms` | `15,000 ms` (15.0 s) |
 | **Step 2: Full Recipe (`qwen2.5`)** | `step2_total_ms` | `< 10,000 ms` | `30,000 ms` (30.0 s) |
 | **Generation Speed** | `tokens_per_second` | `> 10.0 tok/s` | `> 4.0 tok/s` |
 | **Peak Process RAM** | `ram_usage_mb` | `< 4,500 MB` | `< 5,500 MB` |
@@ -43,7 +45,8 @@ Every pipeline execution logs telemetry to `output/logs/perf_metrics.jsonl`. **A
 * **Objective:** Ground LLM responses in user-provided documents without exceeding context window limits.
 * **Acceptance Criteria:**
   * Indexes `.md`, `.txt`, and `.pdf` files from `profiles/<name>/knowledge/` into a local `ChromaDB` instance using `nomic-embed-text`.
-  * Retrieves top-$k$ ($k \le 3$) relevant chunks per query to keep prompt size under `1,024` tokens.
+  * For Chef, indexes only pre-condensed recipe cards in `TITRE | TAGS | INGRÉDIENTS | ÉTAPES` format, each under 120 estimated tokens.
+  * Retrieves at most two recipe cards and 250 estimated RAG tokens per request. Total assembled prompt budget is 550 estimated tokens.
 
 ### Feature C3: Self-Correcting Tool Orchestrator (`core/engine.py`)
 * **Objective:** Execute deterministic Python tools and recover gracefully from small-model syntax/argument errors.
@@ -71,11 +74,11 @@ Every pipeline execution logs telemetry to `output/logs/perf_metrics.jsonl`. **A
 ### Feature F3: Two-Stage Minimalist Recipe Workflow
 * **Objective:** Minimize screen clutter, preserve context window memory, and balance safety with culinary discovery.
 * **Acceptance Criteria:**
-  * **Stage 1 (Brainstorming):** Given ingredients and user direction, outputs a Pydantic-validated list of **exactly 5 proposals**:
-    * **3 `Classique`:** Safe, familiar dishes matching household preferences.
-    * **2 `Exploration`:** Creative or international dishes (e.g., Chinese, Indian, Mediterranean) still respecting allergies.
-    * Each proposal pitch must be **$\le 12$ words** to fit on a compact portable screen.
-  * **Stage 2 (Generation & Templating):** Upon user selection (`1` to `5`), clears Stage 1 clutter and generates **only** the chosen recipe using a strict Pydantic schema (`title`, `category`, `prep_time`, `cook_time`, `servings`, `ingredients`, `steps`, `chef_tip`).
+  * **Stage 1 (Brainstorming):** Given ingredients and user direction, outputs a Pydantic-validated list of **exactly 3 proposals**:
+    * **2 `Classique`:** Safe, familiar dishes matching household preferences.
+    * **1 `Exploration`:** A creative or international dish still respecting allergies.
+    * Each proposal has a short title and one-line pitch.
+  * **Stage 2 (Generation & Templating):** Upon user selection (`1` to `3`), clears Stage 1 clutter and generates **only** the chosen recipe using a strict Pydantic schema (`title`, `category`, `prep_time`, `cook_time`, `servings`, `ingredients`, `steps`, `chef_tip`) with at most five ingredients and exactly four concise steps.
 
 ### Feature F4: Standardized Recipe Export
 * **Objective:** Produce consistent, readable recipe cards for offline viewing or printing.
@@ -91,7 +94,7 @@ All `e2e` tests run with `temperature=0.0` and `seed=42` against the live local 
 
 1. **`test_e2e_chef_two_stage_pipeline`:**
    * *Input:* Ingredients `"chicken breast, zucchini, rice"`, preference `"quick dinner"`.
-   * *Assertions:* Stage 1 returns 5 items (3 `Classique`, 2 `Exploration`), all pitches $\le 12$ words, completes in `< 15s`. Selecting item `4` generates a valid Markdown file in `output/recipes/` matching all template headers in `< 30s`.
+   * *Assertions:* Stage 1 returns 3 items (2 `Classique`, 1 `Exploration`), completes in `< 15s`. Selecting item `3` generates a valid Markdown file in `output/recipes/` matching all template headers in `< 30s`.
 2. **`test_e2e_strict_allergy_enforcement`:**
    * *Input:* Temporary profile with `"STRICT ALLERGY: Peanuts and tree nuts"`, request `"Asian stir-fry exploration"`.
    * *Assertions:* Neither Stage 1 proposals nor Stage 2 recipe ingredients/steps contain `"peanut"`, `"cashew"`, `"almond"`, or `"nut"`.

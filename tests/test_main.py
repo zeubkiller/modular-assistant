@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
-from core.engine import ConversationEngine
+from core.config_loader import load_config
+from core.engine import MAX_PROMPT_TOKENS, ConversationEngine
+from core.prompt_budget import estimate_message_tokens
 from main import (
     _include_photo_ingredients,
     create_approved_recipe,
@@ -13,60 +15,74 @@ from profiles.chef.tools.chef_tools import RecipeProposalSet
 
 def proposal_payload():
     return {
-        "classiques": [
-            {"title": "Poulet au riz", "pitch": "Simple et familial."},
-            {"title": "Courgettes rôties", "pitch": "Douces et méditerranéennes."},
-            {"title": "Lentilles mijotées", "pitch": "Nourrissant et doux."},
+        "c": [
+            ("Poulet riz", "Simple familial"),
+            ("Courgette", "Douce et rôtie"),
         ],
-        "explorations": [
-            {"title": "Riz sauté", "pitch": "Inspiré des saveurs asiatiques."},
-            {"title": "Curry de légumes", "pitch": "Indien doux et parfumé."},
+        "e": [
+            ("Riz sauté", "Simple et bon"),
         ],
     }
 
 
-def test_generate_recipe_proposals_uses_profile_knowledge(tmp_path, mocker):
-    knowledge = tmp_path / "knowledge"
-    knowledge.mkdir()
-    (knowledge / "family_preferences.md").write_text(
-        "Allergie: arachides", encoding="utf-8"
-    )
-    (knowledge / "pantry_staples.md").write_text(
-        "Disponible: sauce soja", encoding="utf-8"
-    )
+def test_generate_recipe_proposals_uses_fixed_profile_and_short_context(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
     mock_chat = mocker.patch(
         "main.ollama.chat",
         return_value={"message": {"content": json.dumps(proposal_payload())}},
     )
+    rag = mocker.Mock()
+    rag.query.return_value = [
+        "TITRE: Poulet citron | TAGS: rapide",
+        "TITRE: Lentilles | TAGS: mijoté",
+        "TITRE: Hors budget | TAGS: à exclure",
+    ]
     engine = ConversationEngine(
-        {"model": "qwen2.5-coder:3b", "system_prompt": "Chef."},
+        load_config("chef"),
         tools={},
+        rag_index=rag,
     )
 
     proposals = generate_recipe_proposals(
         engine,
         "Poulet, courgettes, envie d'un dîner rapide",
-        tmp_path,
     )
 
     assert isinstance(proposals, RecipeProposalSet)
-    assert len(proposals.proposals) == 5
+    assert len(proposals.proposals) == 3
     kwargs = mock_chat.call_args.kwargs
-    prompt_content = kwargs["messages"][-1]["content"]
-    assert "Allergie: arachides" in prompt_content
-    assert "Disponible: sauce soja" in prompt_content
+    prompt_messages = kwargs["messages"][:3]
+    prompt_content = prompt_messages[-1]["content"]
     assert "dîner rapide" in prompt_content
+    system_prompt = prompt_messages[0]["content"]
+    assert "arachides" in system_prompt
+    assert "sauce soja" in system_prompt
+    assert "TITRE: Poulet citron" in prompt_messages[1]["content"]
+    assert "TITRE: Lentilles" in prompt_messages[1]["content"]
+    assert "Hors budget" not in "\n".join(
+        message["content"] for message in prompt_messages
+    )
+    assert len(prompt_messages) == 3
+    rag.query.assert_called_once_with(
+        "Poulet, courgettes, envie d'un dîner rapide",
+        n_results=2,
+    )
+    assert kwargs["keep_alive"] == -1
+    assert kwargs["options"]["num_ctx"] == 2048
+    assert kwargs["options"]["num_thread"] == 4
+    assert estimate_message_tokens(prompt_messages) < 600
+    assert kwargs["options"]["num_predict"] == 80
     assert kwargs["options"]["temperature"] == 0.0
     assert kwargs["options"]["seed"] == 42
 
 
-def test_generate_recipe_proposals_retries_invalid_pitch(tmp_path, mocker):
-    family = tmp_path / "knowledge"
-    family.mkdir()
-    (family / "family_preferences.md").write_text("Aucune allergie.", encoding="utf-8")
-    (family / "pantry_staples.md").write_text("Riz disponible.", encoding="utf-8")
+def test_generate_recipe_proposals_retries_invalid_pitch(mocker, monkeypatch):
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
     invalid = proposal_payload()
-    invalid["classiques"][0]["pitch"] = " ".join(["mot"] * 11)
+    invalid["c"][0] = ("Titre", " ".join(["mot"] * 11))
     valid = proposal_payload()
     mock_chat = mocker.patch(
         "main.ollama.chat",
@@ -76,23 +92,27 @@ def test_generate_recipe_proposals_retries_invalid_pitch(tmp_path, mocker):
         ],
     )
     engine = ConversationEngine(
-        {"model": "qwen2.5-coder:3b", "system_prompt": "Chef."},
+        load_config("chef"),
         tools={},
     )
 
-    proposals = generate_recipe_proposals(engine, "Légumes", tmp_path)
+    proposals = generate_recipe_proposals(engine, "Légumes")
 
-    assert len(proposals.proposals) == 5
+    assert len(proposals.proposals) == 3
     assert mock_chat.call_count == 2
+    assert all(
+        estimate_message_tokens(call.kwargs["messages"]) <= MAX_PROMPT_TOKENS
+        for call in mock_chat.call_args_list
+    )
     assert "Légumes" in engine.messages[-2]["content"]
     assert "Corrige la réponse précédente" not in engine.messages[-2]["content"]
 
 
-def test_parse_recipe_selection_accepts_only_one_to_five():
-    assert [parse_recipe_selection(str(number)) for number in range(1, 6)] == [
-        1, 2, 3, 4, 5
+def test_parse_recipe_selection_accepts_only_one_to_three():
+    assert [parse_recipe_selection(str(number)) for number in range(1, 4)] == [
+        1, 2, 3
     ]
-    assert parse_recipe_selection("6") is None
+    assert parse_recipe_selection("4") is None
     assert parse_recipe_selection("je choisis la 2") is None
 
 
@@ -121,7 +141,9 @@ def test_create_approved_recipe_generates_only_selected_proposal(mocker):
                     '{"title":"Wrong title","category":"Classique",'
                     '"prep_time":"15 minutes","cook_time":"20 minutes",'
                     '"servings":4,"ingredients":["riz"],'
-                    '"steps":["Cuire le riz."],"chef_tip":"Servir chaud."}'
+                    '"steps":["Rincer le riz.","Faire revenir oignon.",'
+                    '"Cuire le riz.","Saler et poivrer."],'
+                    '"chef_tip":"Servir chaud."}'
                 )
             }
         },
@@ -145,9 +167,13 @@ def test_create_approved_recipe_generates_only_selected_proposal(mocker):
         {"role": "assistant", "content": proposals.model_dump_json()},
     ]
 
-    saved = create_approved_recipe(engine, proposals, 4, "qwen2.5-coder:3b")
+    saved = create_approved_recipe(engine, proposals, 3, "qwen2.5-coder:3b")
 
     assert saved == Path("/tmp/poulet-au-riz.md")
+    assert mock_chat.call_args.kwargs["keep_alive"] == -1
+    assert mock_chat.call_args.kwargs["options"]["num_ctx"] == 2048
+    assert mock_chat.call_args.kwargs["options"]["num_thread"] == 4
+    assert mock_chat.call_args.kwargs["options"]["num_predict"] == 260
     assert mock_chat.call_args.kwargs["options"]["temperature"] == 0.0
     assert mock_chat.call_args.kwargs["options"]["seed"] == 42
     save_mock.assert_called_once_with(
@@ -157,7 +183,12 @@ def test_create_approved_recipe_generates_only_selected_proposal(mocker):
         cook_time="20 minutes",
         servings=4,
         ingredients=["riz"],
-        steps=["Cuire le riz."],
+        steps=[
+            "Rincer le riz.",
+            "Faire revenir oignon.",
+            "Cuire le riz.",
+            "Saler et poivrer.",
+        ],
         chef_tip="Servir chaud.",
     )
     assert "Riz sauté" in engine.messages[1]["content"]

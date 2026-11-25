@@ -1,21 +1,5 @@
-# Préférences familiales
-
-- Allergies: arachides, fruits à coque.
-- Préférences: cuisine méditerranéenne, peu épicée.
-- Aliments appréciés: poulet, légumes rôtis, lentilles, riz.
-- Aliments évités: viande rouge, poisson cru.
-- Régime: aucune viande rouge; possibilité de repas végétariens.
-
-# Équipement disponible
-
-- Casseroles 3 tailles
-- Poêle antiadhésive
-- Four
-- Mixeur plongeant
-- Balance de cuisine
-
-# Règles
-
-- Toujours vérifier les étiquettes pour les traces d'allergènes.
-- Préférer les recettes en moins de 45 minutes.
-- Donner les quantités pour 4 personnes par défaut.
+Allergies: arachides et fruits à coque; vérifier les traces. Préférences:
+méditerranéen peu épicé; poulet, légumes rôtis, lentilles et riz. Éviter la
+viande rouge et le poisson cru; repas végétariens acceptés. Durée: moins de
+45 minutes. Portions: 4. Équipement: casseroles, poêle antiadhésive, four,
+mixeur plongeant et balance.

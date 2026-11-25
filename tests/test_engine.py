@@ -3,7 +3,12 @@ import json
 
 import pytest
 
-from core.engine import ConversationEngine
+from core.engine import (
+    MAX_RAG_CONTEXT_TOKENS,
+    ConversationEngine,
+    warmup_ollama_model,
+)
+from core.prompt_budget import estimate_message_tokens
 
 
 CONFIG = {
@@ -21,11 +26,35 @@ def test_chat_returns_plain_response(mocker):
 
     assert engine.chat("Bonjour") == "Bonjour!"
     assert engine.messages[-1] == {"role": "assistant", "content": "Bonjour!"}
+    assert client.chat.call_args.kwargs["keep_alive"] == -1
+    assert client.chat.call_args.kwargs["options"] == {
+        "num_ctx": 2048,
+        "num_thread": 4,
+    }
+
+
+def test_model_warmup_uses_empty_prompt_and_requested_keep_alive(mocker):
+    client = mocker.Mock()
+
+    warmup_ollama_model("qwen2.5:1.5b", keep_alive=-1, ollama_client=client)
+
+    client.generate.assert_called_once_with(
+        model="qwen2.5:1.5b",
+        prompt="",
+        keep_alive=-1,
+        options={
+            "num_ctx": 2048,
+            "num_thread": 4,
+            "num_predict": 1,
+            "temperature": 0.0,
+            "seed": 42,
+        },
+    )
 
 
 def test_rag_context_is_injected(mocker):
     rag = mocker.Mock()
-    rag.query.return_value = ["[Source: preferences.md]\nPas d'arachides."]
+    rag.query.return_value = ["TITRE: lentilles | TAGS: doux"]
     client = mocker.Mock()
     client.chat.return_value = {"message": {"content": "Compris"}}
     engine = ConversationEngine(CONFIG, tools={}, rag_index=rag, ollama_client=client)
@@ -33,8 +62,11 @@ def test_rag_context_is_injected(mocker):
     engine.chat("Peux-tu cuisiner?")
 
     sent_messages = client.chat.call_args.kwargs["messages"]
-    user_message = next(message for message in sent_messages if message["role"] == "user")
-    assert "Pas d'arachides" in user_message["content"]
+    assert sent_messages[0] == {"role": "system", "content": CONFIG["system_prompt"]}
+    assert "TITRE: lentilles" in sent_messages[1]["content"]
+    assert estimate_message_tokens([sent_messages[1]]) <= MAX_RAG_CONTEXT_TOKENS
+    assert sent_messages[2] == {"role": "user", "content": "Peux-tu cuisiner?"}
+    rag.query.assert_called_once_with("Peux-tu cuisiner?", n_results=2)
 
 
 def test_tool_call_is_executed(mocker):
